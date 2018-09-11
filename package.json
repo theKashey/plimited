@@ -1,6 +1,6 @@
 {
   "name": "plimited",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Limited promise based resource pool",
   "scripts": {
     "test": "ts-react-toolbox test",
@@ -38,9 +38,9 @@
     "dist"
   ],
   "repository": {
-  "type": "git",
-  "url": "git+https://github.com/theKashey/plimited.git"
-},
+    "type": "git",
+    "url": "git+https://github.com/theKashey/plimited.git"
+  },
   "main": "dist/es5/index.js",
   "jsnext:main": "dist/es2015/index.js",
   "module": "dist/es2015/index.js"
