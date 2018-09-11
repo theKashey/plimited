@@ -27,6 +27,13 @@ export type PooledResource<T> = {
   free(): Promise<void>;
 }
 
+export type QueueLock<T> = {
+  res: Resource<T>,
+  q: Deferred<Resource<T>>,
+  lock: Promise<void>,
+  resolveLock(): void;
+}
+
 type AcquireParams = {
   timeout?: number;
   priority?: number;
@@ -47,10 +54,18 @@ const unresolvedPromise: Promise<string> = new Promise(() => ({}));
 
 const timedPromise = (tm: number): Promise<string> => new Promise(resolve => setTimeout(() => resolve(TIMEOUT), tm));
 
+const deferred = (): [Promise<void>, () => void] => {
+  let resolve = 0 as any;
+  const lock = new Promise<void>(resolver => {
+    resolve = resolver
+  });
+  return [lock, resolve];
+};
+
 export class PLimited<T> {
-  private pending: number = 0;
   private closing: boolean = false;
   private queue: Deferred<Resource<T>>[] = [];
+  private pendingQueue: QueueLock<T>[] = [];
   private pool: Resource<T>[] = [];
   private objectsCreated: number = 0;
   private options: ConstructorProps<T> = defaultProps;
@@ -64,6 +79,7 @@ export class PLimited<T> {
 
     this.queue.forEach(q => q.reject(CLOSE));
 
+    await Promise.all(this.pendingQueue.map(({lock}) => lock));
     await this.destroyPool();
   }
 
@@ -81,7 +97,7 @@ export class PLimited<T> {
   }
 
   allocateResource() {
-    if (this.pending < this.options.limit && this.pool.length === 0) {
+    if (this.getPendingCount() < this.options.limit && this.pool.length === 0) {
       const payload: Resource<T> = {
         payload: undefined as any,
         mutex: undefined as any,
@@ -99,6 +115,12 @@ export class PLimited<T> {
   }
 
   private returnResource(resource: Resource<T>) {
+    const pending = this.pendingQueue.find(({res}) => res === resource);
+    this.pendingQueue = this.pendingQueue.filter(x => x !== pending);
+    if (pending) {
+      pending.resolveLock();
+    }
+
     this.pool.push(resource);
     this.onResourceReady();
 
@@ -114,36 +136,33 @@ export class PLimited<T> {
   }
 
   private onResourceReady() {
-    while (this.pool.length && this.queue.length) {
-      const q = this.queue.pop();
-      const res = this.pool.pop();
-      q!.resolve(res!);
+    if (!this.closing) {
+      while (this.pool.length && this.queue.length) {
+        const q = this.queue.pop()!;
+        const res = this.pool.pop()!;
+        const [lock, resolveLock] = deferred();
+        this.pendingQueue.push({res, q, lock, resolveLock});
+        q!.resolve(res!);
+      }
     }
   }
 
   private pushQueue({priority = 0}: AcquireParams): Promise<Resource<T>> {
     this.allocateResource();
-    if (this.pool.length) {
-      this.pending++;
-      return Promise.resolve(this.pool.pop()!);
-    } else {
-      return new Promise((resolve, reject) => {
-        this.queue.push({
-          resolve,
-          reject,
-          priority
-        });
-        this.onResourceReady();
-      })
-    }
+    return new Promise((resolve, reject) => {
+      this.queue.push({
+        resolve,
+        reject,
+        priority
+      });
+      this.onResourceReady();
+    })
   }
 
   private async acquireResource({priority = 0}: AcquireParams): Promise<PooledResource<T>> {
     return this.pushQueue({priority})
       .then(async res => {
         let open = true;
-
-        this.pending++;
         window.clearTimeout(res.destructionTimeout);
         res.destructionTimeout = 0;
 
@@ -159,7 +178,6 @@ export class PLimited<T> {
           },
           free: async () => {
             if (open) {
-              this.pending--;
               open = false;
               await this.options.onFree!(res.payload, res.id);
               this.returnResource(res);
@@ -196,6 +214,6 @@ export class PLimited<T> {
   }
 
   getPendingCount() {
-    return this.pending;
+    return this.pendingQueue.length;
   }
 }
