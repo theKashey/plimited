@@ -32,6 +32,9 @@ const pool = PLimited({
   // even more optional lifecycle events
   onAcquire: (instance) => instance.prepare(),
   onFree: (instance) => instance.clean(),
+  
+  // you may hold something "complex" inside pull, and return a simpler API
+  getter: (instance) => instance.aLittlePartOfIt;
 });
 
 const task = async () => { 
