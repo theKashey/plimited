@@ -141,6 +141,19 @@ describe('Specs', () => {
       expect(limit.getPendingCount()).toBe(0);
       expect(destructions).toBe(10);
     });
+
+    it('custom getter', async () => {
+      const pool = new PLimited({
+        limit: 1,
+        construct: () => ({a: 42}),
+        destruct: (obj) => expect(obj.a).toBe(42),
+        getter: obj => obj.a,
+      });
+
+      const drop = await pool.acquire();
+      expect(drop.get()).toBe(42);
+      pool.close();
+    })
   });
 });
 

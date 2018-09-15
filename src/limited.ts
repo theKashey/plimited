@@ -1,15 +1,15 @@
 import {PLimited} from "./pool";
 
-interface plimited {
+interface Limited {
   <T>(callback: () => Promise<T>): Promise<T>;
 
   close(): void;
 }
 
-export const limited = (limit: number): plimited => {
+export const limited = (limit: number): Limited => {
   const pool = new PLimited({limit});
 
-  const runner: plimited = function (callback: () => Promise<any>) {
+  const runner: Limited = ((callback: () => Promise<any>) => {
     const lock = pool.acquire();
     return lock
       .then(worker => (
@@ -22,7 +22,7 @@ export const limited = (limit: number): plimited => {
             })
         )
       )
-  } as any;
+  }) as any;
 
   runner.close = () => pool.close();
 
