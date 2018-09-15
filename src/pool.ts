@@ -27,19 +27,19 @@ type Deferred<T> = {
 export type PooledResource<T> = {
   get(): T;
   free(): Promise<void>;
-}
+};
 
 export type QueueLock<T> = {
   res: Resource<T>;
   q: Deferred<Resource<T>>;
   lock: Promise<void>;
   resolveLock(): void;
-}
+};
 
 type AcquireParams = {
   timeout?: number;
   priority?: number;
-}
+};
 
 const defaultProps: ConstructorProps<any> = {
   limit: 4,
@@ -48,19 +48,20 @@ const defaultProps: ConstructorProps<any> = {
   destruct: () => null,
   onAcquire: () => null,
   onFree: () => null,
-  getter: (a:any) => a,
+  getter: (a: any) => a
 };
 
-const TIMEOUT = "timeout";
-const CLOSE = "closing plimited";
+const TIMEOUT = 'timeout';
+const CLOSE = 'closing plimited';
 const unresolvedPromise: Promise<string> = new Promise(() => ({}));
 
-const timedPromise = (tm: number): Promise<string> => new Promise(resolve => setTimeout(() => resolve(TIMEOUT), tm));
+const timedPromise = (tm: number): Promise<string> =>
+  new Promise(resolve => setTimeout(() => resolve(TIMEOUT), tm));
 
 const deferred = (): [Promise<void>, () => void] => {
   let resolve = 0 as any;
   const lock = new Promise<void>(resolver => {
-    resolve = resolver
+    resolve = resolver;
   });
   return [lock, resolve];
 };
@@ -74,7 +75,7 @@ export class PLimited<T, K = T> {
   private options: ConstructorProps<T, K> = defaultProps;
 
   constructor(options: Partial<ConstructorProps<T, K>>) {
-    this.options = { ...defaultProps, ...options};
+    this.options = { ...defaultProps, ...options };
   }
 
   public async acquire(params: AcquireParams = {}): Promise<PooledResource<K>> {
@@ -82,18 +83,17 @@ export class PLimited<T, K = T> {
       return Promise.reject('pool closed');
     }
 
-    const {timeout = 0} = params;
+    const { timeout = 0 } = params;
     const push = this.acquireResource(params);
     const tm = timeout ? timedPromise(timeout) : unresolvedPromise;
 
-    return Promise.race([push, tm])
-      .then(async result => {
-        if (result === TIMEOUT) {
-          push.then(res => res.free());
-          throw new Error(TIMEOUT);
-        }
-        return push;
-      });
+    return Promise.race([push, tm]).then(async result => {
+      if (result === TIMEOUT) {
+        push.then(res => res.free());
+        throw new Error(TIMEOUT);
+      }
+      return push;
+    });
   }
 
   public getQueueDepth() {
@@ -109,19 +109,17 @@ export class PLimited<T, K = T> {
 
     this.queue.forEach(q => q.reject(CLOSE));
 
-    await Promise.all(this.pendingQueue.map(({lock}) => lock));
+    await Promise.all(this.pendingQueue.map(({ lock }) => lock));
     await this.destroyPool();
   }
 
   private async destroyPool() {
     await Promise.all(
-      this.pool.map(
-        async (res, index) => {
-          clearTimeout(res.destructionTimeout);
-          await res.mutex;
-          await this.options.destruct!(res.payload, index);
-        }
-      )
+      this.pool.map(async (res, index) => {
+        clearTimeout(res.destructionTimeout);
+        await res.mutex;
+        await this.options.destruct!(res.payload, index);
+      })
     );
     this.pool = [];
   }
@@ -134,18 +132,18 @@ export class PLimited<T, K = T> {
         id: this.objectsCreated++
       };
 
-      payload.mutex = Promise
-        .resolve(this.options.construct!(payload.id))
-        .then(result => {
+      payload.mutex = Promise.resolve(this.options.construct!(payload.id)).then(
+        result => {
           payload.payload = result;
-        });
+        }
+      );
 
       this.returnResource(payload);
     }
   }
 
   private returnResource(resource: Resource<T>) {
-    const pending = this.pendingQueue.find(({res}) => res === resource);
+    const pending = this.pendingQueue.find(({ res }) => res === resource);
     this.pendingQueue = this.pendingQueue.filter(x => x !== pending);
     if (pending) {
       pending.resolveLock();
@@ -171,13 +169,13 @@ export class PLimited<T, K = T> {
         const q = this.queue.pop()!;
         const res = this.pool.pop()!;
         const [lock, resolveLock] = deferred();
-        this.pendingQueue.push({res, q, lock, resolveLock});
+        this.pendingQueue.push({ res, q, lock, resolveLock });
         q!.resolve(res!);
       }
     }
   }
 
-  private pushQueue({priority = 0}: AcquireParams): Promise<Resource<T>> {
+  private pushQueue({ priority = 0 }: AcquireParams): Promise<Resource<T>> {
     this.allocateResource();
     return new Promise((resolve, reject) => {
       this.queue.push({
@@ -186,37 +184,38 @@ export class PLimited<T, K = T> {
         priority
       });
       this.onResourceReady();
-    })
+    });
   }
 
-  private async acquireResource({priority = 0}: AcquireParams): Promise<PooledResource<K>> {
-    return this.pushQueue({priority})
-      .then(async res => {
-        let open = true;
-        window.clearTimeout(res.destructionTimeout);
-        res.destructionTimeout = 0;
+  private async acquireResource({
+    priority = 0
+  }: AcquireParams): Promise<PooledResource<K>> {
+    return this.pushQueue({ priority }).then(async res => {
+      let open = true;
+      window.clearTimeout(res.destructionTimeout);
+      res.destructionTimeout = 0;
 
-        await res.mutex;
-        await this.options.onAcquire!(res.payload, res.id);
+      await res.mutex;
+      await this.options.onAcquire!(res.payload, res.id);
 
-        const result: PooledResource<K> = {
-          get: () => {
-            if (open) {
-              return this.options.getter!(res.payload);
-            }
-            throw new Error('plimited: resource already freed');
-          },
-          free: async () => {
-            if (open) {
-              open = false;
-              await this.options.onFree!(res.payload, res.id);
-              this.returnResource(res);
-            } else {
-              throw new Error('plimited: resource already freed');
-            }
+      const result: PooledResource<K> = {
+        get: () => {
+          if (open) {
+            return this.options.getter!(res.payload);
           }
-        };
-        return result;
-      });
+          throw new Error('plimited: resource already freed');
+        },
+        free: async () => {
+          if (open) {
+            open = false;
+            await this.options.onFree!(res.payload, res.id);
+            this.returnResource(res);
+          } else {
+            throw new Error('plimited: resource already freed');
+          }
+        }
+      };
+      return result;
+    });
   }
 }
