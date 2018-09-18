@@ -15,7 +15,7 @@ type Resource<T> = {
   payload: T;
   mutex: Promise<any>;
   id: number;
-  destructionTimeout?: number;
+  destructionTimeout?: any;
 };
 
 type Deferred<T> = {
@@ -155,7 +155,7 @@ export class PLimited<T, K = T> {
     // ttl
     if (this.options.ttl) {
       clearTimeout(resource.destructionTimeout);
-      resource.destructionTimeout = window.setTimeout(() => {
+      resource.destructionTimeout = setTimeout(() => {
         const index = this.pool.indexOf(resource);
         this.options.destruct!(resource.payload, resource.id);
         this.pool.splice(index, 1);
@@ -192,7 +192,7 @@ export class PLimited<T, K = T> {
   }: AcquireParams): Promise<PooledResource<K>> {
     return this.pushQueue({ priority }).then(async res => {
       let open = true;
-      window.clearTimeout(res.destructionTimeout);
+      clearTimeout(res.destructionTimeout);
       res.destructionTimeout = 0;
 
       await res.mutex;
