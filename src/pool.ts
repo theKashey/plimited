@@ -1,13 +1,34 @@
 type ConstructorProps<T, K = T> = {
+  /**
+   * maximum simultaneous workers
+   */
   limit: number;
+  /**
+   * TimeToLife for the unused worker
+   */
   ttl: number;
 
+  /**
+   * Callback to construct worker
+   */
   construct(index: number): T | Promise<T>;
+  /**
+   * Callback to destruct worker
+   */
   destruct(object: T, index: number): any | Promise<any>;
 
+  /**
+   * Callback when someone allocates a worker
+   */
   onAcquire(object: T, index: number): any | Promise<any>;
+  /**
+   * Callback when someone frees a worker
+   */
   onFree(object: T, index: number): any | Promise<any>;
 
+  /**
+   * Mapper to a customer presentation
+   */
   getter(object: T): K;
 };
 
@@ -25,8 +46,18 @@ type Deferred<T> = {
 };
 
 export type PooledResource<T> = {
+  /**
+   * returns an allocated resource
+   */
   get(): T;
+  /**
+   * frees an allocated resource
+   */
   free(): Promise<void>;
+  /**
+   * destroys existing resource and allocates a new one
+   */
+  regenerate(): Promise<void>;
 };
 
 export type QueueLock<T> = {
@@ -75,15 +106,19 @@ export class PLimited<T, K = T> {
   private options: ConstructorProps<T, K> = defaultProps;
 
   constructor(options: Partial<ConstructorProps<T, K>>) {
-    this.options = { ...defaultProps, ...options };
+    this.options = {...defaultProps, ...options};
   }
 
+  /**
+   * Will give you a resource. Sooner or later
+   * @param params
+   */
   public async acquire(params: AcquireParams = {}): Promise<PooledResource<K>> {
     if (this.closing) {
       return Promise.reject('pool closed');
     }
 
-    const { timeout = 0 } = params;
+    const {timeout = 0} = params;
     const push = this.acquireResource(params);
     const tm = timeout ? timedPromise(timeout) : unresolvedPromise;
 
@@ -96,21 +131,24 @@ export class PLimited<T, K = T> {
     });
   }
 
+  /**
+   * closes pool
+   */
+  public async close() {
+    this.closing = true;
+
+    this.queue.forEach(q => q.reject(CLOSE));
+
+    await Promise.all(this.pendingQueue.map(({lock}) => lock));
+    await this.destroyPool();
+  }
+
   public getQueueDepth() {
     return this.queue.length;
   }
 
   public getPendingCount() {
     return this.pendingQueue.length;
-  }
-
-  public async close() {
-    this.closing = true;
-
-    this.queue.forEach(q => q.reject(CLOSE));
-
-    await Promise.all(this.pendingQueue.map(({ lock }) => lock));
-    await this.destroyPool();
   }
 
   private async destroyPool() {
@@ -142,43 +180,55 @@ export class PLimited<T, K = T> {
     }
   }
 
-  private returnResource(resource: Resource<T>) {
-    const pending = this.pendingQueue.find(({ res }) => res === resource);
+  private destroyResource(resource: Resource<T>) {
+    if (this.options.ttl) {
+      clearTimeout(resource.destructionTimeout);
+    }
+    const index = this.pool.indexOf(resource);
+    if (index >= 0) {
+      this.pool.splice(index, 1);
+    }
+    this.options.destruct!(resource.payload, resource.id);
+  }
+
+  private returnResource(resource: Resource<T>, trashResource = false) {
+    const pending = this.pendingQueue.find(({res}) => res === resource);
     this.pendingQueue = this.pendingQueue.filter(x => x !== pending);
     if (pending) {
       pending.resolveLock();
     }
 
-    this.pool.push(resource);
-    this.onResourceReady();
+    if (trashResource) {
+      this.destroyResource(resource);
+    } else {
+      this.pool.push(resource);
+    }
 
     // ttl
     if (this.options.ttl) {
       clearTimeout(resource.destructionTimeout);
-      resource.destructionTimeout = setTimeout(() => {
-        const index = this.pool.indexOf(resource);
-        this.options.destruct!(resource.payload, resource.id);
-        this.pool.splice(index, 1);
-      }, this.options.ttl);
+      resource.destructionTimeout = setTimeout(() => this.destroyResource(resource), this.options.ttl);
     }
+
+    this.onResourceReady();
   }
 
   private onResourceReady() {
     if (!this.closing) {
       while (this.pool.length && this.queue.length) {
-        const q = this.queue.pop()!;
+        const q = this.queue.shift()!;
         const res = this.pool.pop()!;
         const [lock, resolveLock] = deferred();
-        this.pendingQueue.push({ res, q, lock, resolveLock });
+        this.pendingQueue.push({res, q, lock, resolveLock});
         q!.resolve(res!);
       }
     }
   }
 
-  private pushQueue({ priority = 0 }: AcquireParams): Promise<Resource<T>> {
+  private pushQueue({priority = 0}: AcquireParams): Promise<Resource<T>> {
     this.allocateResource();
     return new Promise((resolve, reject) => {
-      this.queue.push({
+      this.queue[priority >= 1 ? 'unshift' : 'push']({
         resolve,
         reject,
         priority
@@ -188,34 +238,45 @@ export class PLimited<T, K = T> {
   }
 
   private async acquireResource({
-    priority = 0
-  }: AcquireParams): Promise<PooledResource<K>> {
-    return this.pushQueue({ priority }).then(async res => {
-      let open = true;
-      clearTimeout(res.destructionTimeout);
-      res.destructionTimeout = 0;
+                                  priority = 0
+                                }: AcquireParams): Promise<PooledResource<K>> {
+    return this.pushQueue({priority})
+      .then(async initialResource => {
+        let res = initialResource;
+        let open = true;
+        clearTimeout(res.destructionTimeout);
+        res.destructionTimeout = 0;
 
-      await res.mutex;
-      await this.options.onAcquire!(res.payload, res.id);
+        await res.mutex;
+        await this.options.onAcquire!(res.payload, res.id);
 
-      const result: PooledResource<K> = {
-        get: () => {
-          if (open) {
-            return this.options.getter!(res.payload);
-          }
-          throw new Error('plimited: resource already freed');
-        },
-        free: async () => {
-          if (open) {
+        const result: PooledResource<K> = {
+          get: () => {
+            if (open) {
+              return this.options.getter!(res.payload);
+            }
+            throw new Error('plimited: resource already freed');
+          },
+          free: async () => {
+            if (open) {
+              open = false;
+              await this.options.onFree!(res.payload, res.id);
+              this.returnResource(res);
+            } else {
+              throw new Error('plimited: resource already freed');
+            }
+          },
+          regenerate: async () => {
             open = false;
             await this.options.onFree!(res.payload, res.id);
-            this.returnResource(res);
-          } else {
-            throw new Error('plimited: resource already freed');
+            const newRes = this.pushQueue({priority:1});
+            this.returnResource(res, true);
+            this.allocateResource();
+            res = await newRes;
+            open = true;
           }
         }
-      };
-      return result;
-    });
+        return result;
+      });
   }
 }

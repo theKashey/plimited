@@ -142,6 +142,45 @@ describe('Specs', () => {
       expect(destructions).toBe(10);
     });
 
+    it('regenerate', async () => {
+      let constructions = 0;
+      let destructions = 0;
+
+      const limit = new PLimited({
+        limit: 2,
+        ttl: 5,
+
+        construct: (index) => {
+          return ({index, constructions: constructions++})
+        },
+        destruct: () => {
+          destructions++;
+        },
+      });
+
+      const worker1 = await limit.acquire();
+      const worker2 = await limit.acquire();
+      expect(constructions).toBe(2);
+      expect(destructions).toBe(0);
+
+      await worker2.regenerate();
+
+      expect(constructions).toBe(3);
+      expect(destructions).toBe(1);
+
+      const worker3 = limit.acquire();
+      await worker2.regenerate();
+      worker2.free();
+      await worker3;
+
+      worker1.free();
+      worker2.free();
+      (await worker3).free();
+      await limit.close();
+      expect(constructions).toBe(4);
+      expect(destructions).toBe(4);
+    });
+
     it('custom getter', async () => {
       const pool = new PLimited({
         limit: 1,
