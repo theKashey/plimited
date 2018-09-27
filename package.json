@@ -12,7 +12,8 @@
     "lint": "ts-react-toolbox lint",
     "static": "ts-react-toolbox publish",
     "format": "ts-react-toolbox format",
-    "analyze": "ts-react-toolbox analyze"
+    "analyze": "ts-react-toolbox analyze",
+    "prepublishOnly": "yarn build"
   },
   "keywords": [
     "pool",
