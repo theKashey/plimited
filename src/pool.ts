@@ -4,6 +4,10 @@ type ConstructorProps<T, K = T> = {
    */
   limit: number;
   /**
+   * maximum simultaneous workers in construction
+   */
+  constructionLimit: number;
+  /**
    * TimeToLife for the unused worker
    */
   ttl: number;
@@ -74,6 +78,7 @@ type AcquireParams = {
 
 const defaultProps: ConstructorProps<any> = {
   limit: 4,
+  constructionLimit: Infinity,
   ttl: 0,
   construct: () => null,
   destruct: () => null,
@@ -101,6 +106,7 @@ export class PLimited<T, K = T> {
   private closing: boolean = false;
   private queue: Deferred<Resource<T>>[] = [];
   private pendingQueue: QueueLock<T>[] = [];
+  private pendingConstructions: any[] = [];
   private pool: Resource<T>[] = [];
   private objectsCreated: number = 0;
   private options: ConstructorProps<T, K> = defaultProps;
@@ -163,7 +169,14 @@ export class PLimited<T, K = T> {
   }
 
   private allocateResource() {
-    if (this.getPendingCount() < this.options.limit && this.pool.length === 0) {
+    if (
+      // not exceed limits
+      this.getPendingCount() < this.options.limit &&
+      // dont have anything free in the pool (TODO: preheat?)
+      this.pool.length === 0 &&
+      // below the construction limit
+      this.pendingConstructions.length < this.options.constructionLimit
+    ) {
       const payload: Resource<T> = {
         payload: undefined as any,
         mutex: undefined as any,
@@ -172,9 +185,14 @@ export class PLimited<T, K = T> {
 
       payload.mutex = Promise.resolve(this.options.construct!(payload.id)).then(
         result => {
+          this.pendingConstructions = this.pendingConstructions.filter(x => x !== payload.mutex);
           payload.payload = result;
+          if (this.getQueueDepth()) {
+            this.allocateResource();
+          }
         }
       );
+      this.pendingConstructions.push(payload.mutex);
 
       this.returnResource(payload);
     }
@@ -269,7 +287,7 @@ export class PLimited<T, K = T> {
           regenerate: async () => {
             open = false;
             await this.options.onFree!(res.payload, res.id);
-            const newRes = this.pushQueue({priority:1});
+            const newRes = this.pushQueue({priority: 1});
             this.returnResource(res, true);
             this.allocateResource();
             res = await newRes;

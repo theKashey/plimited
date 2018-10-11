@@ -142,6 +142,37 @@ describe('Specs', () => {
       expect(destructions).toBe(10);
     });
 
+    it('construction limit', async () => {
+      let constructions = 0;
+      let destructions = 0;
+
+      const limit = new PLimited({
+        limit: 2,
+        constructionLimit: 1,
+        ttl: 5,
+
+        construct: () => {
+          constructions++;
+          return Promise.resolve().then(() => ({}));
+        },
+        destruct: () => {
+          destructions++;
+        },
+      });
+
+      const worker1 = limit.acquire();
+      const worker2 = limit.acquire();
+      expect(constructions).toBe(1);
+      expect(destructions).toBe(0);
+
+      await worker2;
+      expect(constructions).toBe(2);
+
+      (await worker1).free();
+      (await worker2).free();
+      await limit.close();
+    });
+
     it('regenerate', async () => {
       let constructions = 0;
       let destructions = 0;
