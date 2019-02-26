@@ -40,8 +40,10 @@ const pool = PLimited({
   // you may hold something "complex" inside pull, and return a simpler API
   getter: (instance) => instance.aLittlePartOfIt;
 });
+```
 
-const task = async () => { 
+The usage itself it quite straightforward:
+```js
   // acquire "worker"
   const worker = await pool.acquire();
   // use instance you `constructor` before
@@ -50,6 +52,7 @@ const task = async () => {
   worker.free();
 };
 ```
+You dont have to `construct` something complex - it work as a async semaphore, like [async-sema](https://github.com/zeit/async-sema).
 
 2. __limited__ - concurent execution controller.
 
