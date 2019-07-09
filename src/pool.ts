@@ -1,39 +1,46 @@
-type ConstructorProps<T, K = T> = {
+type ConstructorProps<T, K, Z = undefined> = {
   /**
    * maximum simultaneous workers
+   * once you reach this limit - tasks would start to queue
    */
   limit: number;
   /**
    * maximum simultaneous workers in construction
+   * it might be useful to open, for example, only one connection to the database at once
+   * even if you could have 100 simultaneously
    */
   constructionLimit: number;
   /**
    * TimeToLife for the unused worker
+   * after this time it would be destoyed
    */
   ttl: number;
 
+  onInit(): Z | Promise<Z>;
+  onIdle(data: Z): void;
+
   /**
-   * Callback to construct worker
+   * Callback to construct a worker
    */
-  construct(index: number): T | Promise<T>;
+  construct(index: number, shared: Z): T | Promise<T>;
   /**
-   * Callback to destruct worker
+   * Callback to destruct a worker
    */
-  destruct(object: T, index: number): any | Promise<any>;
+  destruct(worker: T, index: number): any | Promise<any>;
 
   /**
    * Callback when someone allocates a worker
    */
-  onAcquire(object: T, index: number): any | Promise<any>;
+  onAcquire(worker: T, index: number): any | Promise<any>;
   /**
    * Callback when someone frees a worker
    */
-  onFree(object: T, index: number): any | Promise<any>;
+  onFree(worker: T, index: number): any | Promise<any>;
 
   /**
-   * Mapper to a customer presentation
+   * Mapper to a custom representation
    */
-  getter(object: T): K;
+  getter(worker: T): K;
 };
 
 type Resource<T> = {
@@ -55,9 +62,13 @@ export type PooledResource<T> = {
    */
   get(): T;
   /**
-   * frees an allocated resource
+   * frees an allocated resource, returning it to the pool
    */
   free(): Promise<void>;
+  /**
+   * destroys the current resource, pool would create a new one
+   */
+  drop(): void;
   /**
    * destroys existing resource and allocates a new one
    */
@@ -76,10 +87,12 @@ type AcquireParams = {
   priority?: number;
 };
 
-const defaultProps: ConstructorProps<any> = {
+const defaultProps: ConstructorProps<any, any, any> = {
   limit: 4,
   constructionLimit: Infinity,
   ttl: 0,
+  onInit: () => ({}),
+  onIdle: () => null,
   construct: () => null,
   destruct: () => null,
   onAcquire: () => null,
@@ -102,16 +115,18 @@ const deferred = (): [Promise<void>, () => void] => {
   return [lock, resolve];
 };
 
-export class PLimited<T, K = T> {
+export class PLimited<T, K = T, Z = undefined> {
   private closing: boolean = false;
   private queue: Deferred<Resource<T>>[] = [];
   private pendingQueue: QueueLock<T>[] = [];
   private pendingConstructions: any[] = [];
   private pool: Resource<T>[] = [];
   private objectsCreated: number = 0;
-  private options: ConstructorProps<T, K> = defaultProps;
+  private options: ConstructorProps<T, K, Z> = defaultProps;
+  private shared: Promise<Z> = undefined as any;
+  private workerCount: number = 0;
 
-  constructor(options: Partial<ConstructorProps<T, K>>) {
+  constructor(options: Partial<ConstructorProps<T, K, Z>>) {
     this.options = {...defaultProps, ...options};
   }
 
@@ -157,12 +172,33 @@ export class PLimited<T, K = T> {
     return this.pendingQueue.length;
   }
 
+  private async getSharedObject(): Promise<Z> {
+    if (this.workerCount === 0) {
+      this.shared = Promise.resolve(this.options.onInit());
+      this.shared.then( shared => {
+        if (!shared) {
+          throw new Error('onInit should return a value');
+        }
+      });
+    }
+
+    return this.shared;
+  }
+
+  private async tryReleaseSharedObject() {
+    if (!this.workerCount && this.shared) {
+      const shared = this.shared;
+      this.shared = undefined as any;
+      this.options.onIdle(await shared);
+    }
+  }
+
   private async destroyPool() {
     await Promise.all(
-      this.pool.map(async (res, index) => {
+      this.pool.map(async (res) => {
         clearTimeout(res.destructionTimeout);
         await res.mutex;
-        await this.options.destruct!(res.payload, index);
+        await this.freeResource(res);
       })
     );
     this.pool = [];
@@ -183,19 +219,28 @@ export class PLimited<T, K = T> {
         id: this.objectsCreated++
       };
 
-      payload.mutex = Promise.resolve(this.options.construct!(payload.id)).then(
-        result => {
-          this.pendingConstructions = this.pendingConstructions.filter(x => x !== payload.mutex);
-          payload.payload = result;
-          if (this.getQueueDepth()) {
-            this.allocateResource();
+      payload.mutex = this.getSharedObject()
+        .then(shared => this.options.construct(payload.id, shared))
+        .then(
+          result => {
+            this.pendingConstructions = this.pendingConstructions.filter(x => x !== payload.mutex);
+            payload.payload = result;
+            if (this.getQueueDepth()) {
+              this.allocateResource();
+            }
           }
-        }
-      );
+        );
+      this.workerCount++;
       this.pendingConstructions.push(payload.mutex);
 
       this.returnResource(payload);
     }
+  }
+
+  private freeResource(resource: Resource<T>) {
+    this.options.destruct(resource.payload, resource.id);
+    this.workerCount--;
+    this.tryReleaseSharedObject();
   }
 
   private destroyResource(resource: Resource<T>) {
@@ -206,7 +251,8 @@ export class PLimited<T, K = T> {
     if (index >= 0) {
       this.pool.splice(index, 1);
     }
-    this.options.destruct!(resource.payload, resource.id);
+
+    this.freeResource(resource);
   }
 
   private returnResource(resource: Resource<T>, trashResource = false) {
@@ -266,27 +312,32 @@ export class PLimited<T, K = T> {
         res.destructionTimeout = 0;
 
         await res.mutex;
-        await this.options.onAcquire!(res.payload, res.id);
+        await this.options.onAcquire(res.payload, res.id);
 
         const result: PooledResource<K> = {
           get: () => {
             if (open) {
-              return this.options.getter!(res.payload);
+              return this.options.getter(res.payload);
             }
             throw new Error('plimited: resource already freed');
           },
           free: async () => {
             if (open) {
               open = false;
-              await this.options.onFree!(res.payload, res.id);
+              await this.options.onFree(res.payload, res.id);
               this.returnResource(res);
             } else {
               throw new Error('plimited: resource already freed');
             }
           },
+          drop: async () => {
+            open = false;
+            this.options.onFree(res.payload, res.id);
+            this.returnResource(res, true);
+          },
           regenerate: async () => {
             open = false;
-            await this.options.onFree!(res.payload, res.id);
+            await this.options.onFree(res.payload, res.id);
             const newRes = this.pushQueue({priority: 1});
             this.returnResource(res, true);
             this.allocateResource();

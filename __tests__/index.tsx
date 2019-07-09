@@ -142,6 +142,69 @@ describe('Specs', () => {
       expect(destructions).toBe(10);
     });
 
+    it('group', async () => {
+      let constructions = 0;
+      let destructions = 0;
+      let inits = 0;
+      let closes = 0;
+      let closedWith;
+
+      const limit = new PLimited({
+        limit: 10,
+        ttl: 5,
+
+        onInit: () => {
+          inits++;
+          return {
+            inits
+          }
+        },
+
+        onIdle: (obj) => {
+          closes++;
+          closedWith = obj.inits;
+        },
+
+        construct: (index, {inits}) => ({index, constructions: constructions += inits}),
+        destruct: () => {
+          destructions++;
+        },
+      });
+
+      const tick = async () => {
+        const worker = await limit.acquire();
+
+        await timedPromise(2);
+
+        worker.free();
+      };
+
+      await Promise.all(Array(100).fill(1).map(tick));
+
+      expect(constructions).toBe(10);
+      expect(destructions).toBe(0);
+
+      await timedPromise(1);
+      tick();
+      tick();
+      await timedPromise(5);
+      tick();
+      tick();
+
+      expect(destructions).toBe(8);
+
+      const close = limit.close();
+      expect(destructions).toBe(8);
+      expect(limit.getPendingCount()).toBe(2);
+      await close;
+      expect(limit.getPendingCount()).toBe(0);
+      expect(destructions).toBe(10);
+
+      expect(inits).toBe(1);
+      expect(closes).toBe(1);
+      expect(closedWith).toBe(1);
+    });
+
     it('construction limit', async () => {
       let constructions = 0;
       let destructions = 0;
@@ -162,6 +225,8 @@ describe('Specs', () => {
 
       const worker1 = limit.acquire();
       const worker2 = limit.acquire();
+      await Promise.resolve(1);
+      await Promise.resolve(1);
       expect(constructions).toBe(1);
       expect(destructions).toBe(0);
 
