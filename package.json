@@ -39,6 +39,12 @@
     "type": "git",
     "url": "git+https://github.com/theKashey/plimited.git"
   },
+  "size-limit": [
+    {
+      "path": "dist/es2015/index.js",
+      "limit": "2kb"
+    }
+  ],
   "main": "dist/es5/index.js",
   "jsnext:main": "dist/es2015/index.js",
   "module": "dist/es2015/index.js",
