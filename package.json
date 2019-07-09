@@ -17,10 +17,7 @@
   },
   "keywords": [
     "pool",
-    "async",
-    "await",
-    "plimit",
-    "promise",
+    "pooling",
     "concurency"
   ],
   "author": "theKashey <thekashey@gmail.com>",
