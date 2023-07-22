@@ -26,7 +26,7 @@ Promise? Pool? Promise Pool? Limited Execution? All-in-one
 ```js
 import {PLimited} from 'plimited';
 
-const pool = PLimited({
+const pool = new PLimited({
   // create pool limited to 10 concurrent connections
   limit: 10,
   // create no more than 2 connection simultaneously
